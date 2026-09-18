@@ -1,0 +1,59 @@
+// Prisma schema — reference for PostgreSQL migration path.
+// Runtime uses packages/database/src (node:sqlite) for zero-native-dep SQLite.
+// Keep this schema in sync; `prisma migrate` can target Postgres later.
+//
+// datasource db {
+//   provider = "sqlite" // switch to "postgresql" for Postgres
+//   url      = env("DATABASE_URL")
+// }
+
+model AdminUser {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model WhatsAppAccount {
+  id               String    @id @default(uuid())
+  name             String
+  phoneNumber      String?
+  status           String    @default("DISCONNECTED")
+  sessionReference String    @unique
+  lastConnectedAt  DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  uploads          Upload[]
+
+  @@index([status])
+}
+
+model Upload {
+  id               String    @id @default(uuid())
+  accountId        String
+  account          WhatsAppAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  originalFilename String
+  mimeType         String
+  fileSize         Int
+  duration         Float?
+  width            Int?
+  height           Int?
+  status           String    @default("QUEUED")
+  errorMessage     String?
+  errorCode        String?
+  startedAt        DateTime?
+  completedAt      DateTime?
+  createdAt        DateTime  @default(now())
+
+  @@index([accountId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model SystemSetting {
+  id        String   @id @default(uuid())
+  key       String   @unique
+  value     String
+  updatedAt DateTime @updatedAt
+}

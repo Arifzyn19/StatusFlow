@@ -1,0 +1,11 @@
+{
+  "name": "@statusflow/database",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "migrate": "node ../../node_modules/tsx/dist/cli.mjs src/migrate.ts"
+  }
+}

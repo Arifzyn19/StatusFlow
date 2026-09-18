@@ -1,0 +1,27 @@
+{
+  "name": "statusflow",
+  "version": "1.0.0",
+  "private": true,
+  "description": "StatusFlow — premium multi-account WhatsApp Status uploader",
+  "workspaces": [
+    "apps/api",
+    "apps/web",
+    "packages/shared",
+    "packages/database",
+    "packages/config"
+  ],
+  "scripts": {
+    "dev:api": "npm run dev --workspace=apps/api",
+    "dev:web": "npm run dev --workspace=apps/web",
+    "build": "npm run build --workspace=packages/shared && npm run build --workspace=packages/config && npm run build --workspace=packages/database && npm run build --workspace=apps/api && npm run build --workspace=apps/web",
+    "build:api": "npm run build --workspace=apps/api",
+    "build:web": "npm run build --workspace=apps/web",
+    "test": "npm run test --workspaces",
+    "test:api": "npm run test --workspace=apps/api",
+    "db:migrate": "npm run migrate --workspace=packages/database",
+    "setup": "node scripts/setup.mjs"
+  },
+  "engines": {
+    "node": ">=20.19.0"
+  }
+}
