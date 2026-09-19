@@ -14,7 +14,7 @@ vi.mock('@statusflow/database', () => ({
 }));
 
 import { detectSignature, isPublishReady } from '../src/modules/video/service.js';
-import { disconnectReasonText, withTimeout } from '../src/modules/whatsapp/service.js';
+import { disconnectReasonText, withTimeout, isFreshLinkFailure } from '../src/modules/whatsapp/service.js';
 import { Semaphore } from '../src/utils/semaphore.js';
 import { Errors, toApiError, AppError } from '../src/utils/errors.js';
 import { safeFilename } from '../src/utils/fs.js';
@@ -57,6 +57,35 @@ describe('semaphore concurrency', () => {
   });
 });
 
+describe('fresh-link 401 handling', () => {
+  it('soft-resets when the account never connected', () => {
+    expect(isFreshLinkFailure(401, null)).toBe(true);
+  });
+  it('treats 401 as real logout once connected before', () => {
+    expect(isFreshLinkFailure(401, '2026-01-01 00:00:00')).toBe(false);
+  });
+  it('ignores non-401 codes', () => {
+    expect(isFreshLinkFailure(408, null)).toBe(false);
+    expect(isFreshLinkFailure(undefined, null)).toBe(false);
+  });
+});
+
+describe('framework client errors', () => {
+  it('honors 4xx status instead of reporting 500', () => {
+    const e = Object.assign(new Error("Body cannot be empty when content-type is set to 'application/json'"), {
+      code: 'FST_ERR_CTP_EMPTY_JSON_BODY',
+      statusCode: 400,
+      name: 'FastifyError',
+    });
+    const mapped = toApiError(e, true);
+    expect(mapped.status).toBe(400);
+    expect(mapped.body.code).toBe('BAD_REQUEST');
+  });
+  it('still hides 500 internals in prod', () => {
+    const mapped = toApiError(new Error('secret stack'), true);
+    expect(mapped.body.error).toBe('Internal error');
+  });
+});
 describe('errors', () => {
   it('maps AppError without leaking internals', () => {
     const mapped = toApiError(Errors.tooLarge('big'), true);

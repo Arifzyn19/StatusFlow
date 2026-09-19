@@ -96,6 +96,24 @@ function backoff(attempt: number): number {
   return Math.min(30_000, 1000 * 2 ** Math.min(attempt, 5));
 }
 
+/** True when linking (QR scan / pairing code) never completed: the 401 is a
+ * rejected registration, not a logout — safe to start over instead of
+ * dead-ending in LOGGED_OUT. */
+export function isFreshLinkFailure(code: number | undefined, lastConnectedAt: string | null): boolean {
+  return code === DisconnectReason.loggedOut && !lastConnectedAt;
+}
+
+/** Clear backoff so an explicit user retry (reconnect / pairing) starts fresh. */
+export function resetReconnect(accountId: string): void {
+  const s = sessions.get(accountId);
+  if (!s) return;
+  if (s.reconnectTimer) {
+    clearTimeout(s.reconnectTimer);
+    s.reconnectTimer = null;
+  }
+  s.reconnectAttempts = 0;
+}
+
 function setStatus(
   accountId: string,
   status: WaStatus,
@@ -214,6 +232,25 @@ export function connectAccount(accountId: string): Promise<void> {
         const reason = disconnectReasonText(code);
         log.warn({ accountId, code, reason }, 'whatsapp connection closed');
         if (code === DisconnectReason.loggedOut) {
+          const lastConnected = accountRepo.get(accountId)?.last_connected_at ?? null;
+          if (isFreshLinkFailure(code, lastConnected)) {
+            // Half-registered identity (e.g. pairing code never entered on
+            // the phone): wipe it and restart registration instead of
+            // dead-ending — the user can simply retry with a fresh code.
+            try {
+              fs.rmSync(dir, { recursive: true, force: true });
+            } catch {
+              /* ignore */
+            }
+            resetReconnect(accountId);
+            setStatus(accountId, 'DISCONNECTED', {
+              reasonCode: code,
+              reason: 'Linking didn’t complete. Scan the fresh QR or request a new pairing code.',
+            });
+            s.sock = null;
+            scheduleReconnect(accountId);
+            return;
+          }
           try {
             fs.rmSync(dir, { recursive: true, force: true });
           } catch {

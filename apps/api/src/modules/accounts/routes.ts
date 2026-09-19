@@ -9,6 +9,7 @@ import {
   getQr,
   getStatus,
   requestPairingCode,
+  resetReconnect,
 } from '../whatsapp/service.js';
 import { bus } from '../../utils/events.js';
 import { parseOr400 } from '../../utils/validate.js';
@@ -91,6 +92,7 @@ export async function accountRoutes(app: FastifyInstance) {
     if (!accountRepo.get(id))
       return reply.code(404).send({ error: 'Account not found', code: 'NOT_FOUND' });
     const body = parseOr400(pairingSchema, req.body);
+    resetReconnect(id);
     try {
       const code = await requestPairingCode(id, body.phone);
       return { code };
@@ -107,6 +109,7 @@ export async function accountRoutes(app: FastifyInstance) {
     if (!accountRepo.get(id))
       return reply.code(404).send({ error: 'Account not found', code: 'NOT_FOUND' });
     await disconnectAccount(id).catch(() => {});
+    resetReconnect(id);
     connectAccount(id).catch((e) => app.log.error({ err: e }, 'reconnect failed'));
     return { ok: true, status: getStatus(id) };
   });

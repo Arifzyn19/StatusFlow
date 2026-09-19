@@ -77,6 +77,15 @@ try {
   assert.equal(r.statusCode, 401);
   assert.equal(r.json().code, 'INVALID_CREDENTIALS');
 
+  // 6. empty JSON body → 400 BAD_REQUEST (never 500)
+  r = await app.inject({
+    method: 'POST',
+    url: '/api/auth/login',
+    headers: { 'content-type': 'application/json' },
+  });
+  assert.equal(r.statusCode, 400, `empty body status (got ${r.statusCode}: ${r.body})`);
+  assert.equal(r.json().code, 'BAD_REQUEST');
+
   console.log('smoke-inject: ALL CHECKS PASSED');
 } finally {
   await app.close().catch(() => {});

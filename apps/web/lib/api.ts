@@ -1,9 +1,13 @@
 const BASE = '';
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
+  const hasBody = init?.body !== undefined;
   const res = await fetch(`${BASE}${path}`, {
     credentials: 'include',
-    headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
+    // Never send a JSON content-type with an empty body — Fastify rejects
+    // such requests (FST_ERR_CTP_EMPTY_JSON_BODY), breaking bodyless
+    // DELETE/POST calls.
+    headers: { ...(hasBody ? { 'Content-Type': 'application/json' } : {}), ...(init?.headers ?? {}) },
     ...init,
   });
   if (res.status === 401 && !path.includes('/auth/')) {

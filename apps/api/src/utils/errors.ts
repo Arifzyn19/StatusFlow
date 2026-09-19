@@ -30,6 +30,13 @@ export function toApiError(e: unknown, isProd: boolean) {
       body: { error: e.message, code: e.code, details: e.details },
     };
   }
+  // Honor client-error statuses from the framework (e.g. Fastify
+  // FST_ERR_CTP_EMPTY_JSON_BODY) instead of misreporting them as 500s.
+  const sc = (e as { statusCode?: unknown })?.statusCode;
+  if (typeof sc === 'number' && sc >= 400 && sc < 500) {
+    const msg = e instanceof Error ? e.message : 'Bad request';
+    return { status: sc, body: { error: msg, code: 'BAD_REQUEST' } };
+  }
   const msg = e instanceof Error ? e.message : 'Internal error';
   return {
     status: 500,
