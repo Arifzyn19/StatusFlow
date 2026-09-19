@@ -14,6 +14,8 @@
 | SSE disconnects behind Nginx | Buffering on | Ensure `proxy_buffering off` + `X-Accel-Buffering: no` (see `deploy/nginx.conf`) |
 | 401 loops on web | Cookie `Secure` mismatch over HTTP | Set `COOKIE_SECURE=false` for plain HTTP, `true` behind HTTPS |
 | Backend restart mid-upload | PM2 restart / OOM | Upload stays non-terminal; temp files swept hourly; user retries — success is only reported on confirmed send |
+| `Bad MAC` / `No matching sessions` decrypt errors in logs | Stale incoming Signal sessions (common with LID messages) — Baileys retries automatically | Harmless noise; Status publishing is unaffected. Restart the API if it loops for hours |
+| Delete-account button errors | Fixed: client no longer sends empty JSON bodies; server caps socket teardown so removal can't hang | Update to latest build and restart both PM2 processes |
 | Disk full | Old temp files / DB growth | `du -sh data/*`; temp auto-sweeps files >6h; delete old history records |
 
 **Never** report success without a confirmed `messageId` from Baileys — the code

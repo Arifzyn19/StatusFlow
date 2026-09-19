@@ -60,6 +60,23 @@ try {
   assert.equal(r.statusCode, 200, `accounts: ${r.body}`);
   assert.ok(Array.isArray(r.json()), 'accounts array');
 
+  // 4b. create → delete round-trip (delete must never hang or 500, even
+  // while the socket is mid-handshake)
+  r = await app.inject({
+    method: 'POST',
+    url: '/api/accounts',
+    headers: { cookie: jar },
+    payload: { name: 'smoke-temp' },
+  });
+  assert.equal(r.statusCode, 201, `create account: ${r.body}`);
+  const tempId = (r.json() as { id: string }).id;
+  assert.ok(tempId, 'new account id');
+  r = await app.inject({ method: 'DELETE', url: `/api/accounts/${tempId}`, headers: { cookie: jar } });
+  assert.equal(r.statusCode, 200, `delete account: ${r.body}`);
+  assert.equal((r.json() as { ok: boolean }).ok, true);
+  r = await app.inject({ method: 'GET', url: '/api/accounts', headers: { cookie: jar } });
+  assert.ok(!(r.json() as { id: string }[]).some((a) => a.id === tempId), 'account gone');
+
   r = await app.inject({
     method: 'GET',
     url: '/api/uploads?page=notanumber',

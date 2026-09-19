@@ -299,30 +299,58 @@ export async function disconnectAccount(accountId: string): Promise<void> {
     clearTimeout(s.reconnectTimer);
     s.reconnectTimer = null;
   }
-  try {
-    await s?.sock?.ws?.close();
-  } catch {
-    /* ignore */
-  }
-  try {
-    await s?.sock?.end?.(undefined);
-  } catch {
-    /* ignore */
-  }
+  // Detach first so a dead/hanging socket can never block account removal.
+  const sock = s?.sock;
   if (s) s.sock = null;
+  if (sock) {
+    try {
+      sock.ws?.close();
+    } catch {
+      /* ignore */
+    }
+    try {
+      await withTimeout(
+        Promise.resolve(sock.end?.(undefined)).catch(() => {}),
+        3000,
+        new Error('socket end timeout'),
+      );
+    } catch {
+      /* force-close below regardless */
+    }
+    try {
+      sock.ws?.close();
+    } catch {
+      /* ignore */
+    }
+  }
   setStatus(accountId, 'DISCONNECTED');
 }
 
 export async function logoutAccount(accountId: string): Promise<void> {
   const s = sessions.get(accountId);
-  try {
-    await s?.sock?.logout();
-  } catch {
-    /* already logged out */
-  }
   if (s?.reconnectTimer) {
     clearTimeout(s.reconnectTimer);
     s.reconnectTimer = null;
+  }
+  const sock = s?.sock;
+  if (s) s.sock = null;
+  if (sock) {
+    // logout() awaits a server reply — cap it so a dead socket can't hang
+    // account removal; session files are deleted unconditionally below.
+    try {
+      await withTimeout(
+        Promise.resolve(sock.logout()).catch(() => {}),
+        5000,
+        new Error('logout timeout'),
+      );
+    } catch {
+      /* fall through to force cleanup */
+    }
+    try {
+      sock.ws?.close();
+    } catch {
+      /* ignore */
+    }
   }
   try {
     fs.rmSync(sessionDirFor(accountId), { recursive: true, force: true });
@@ -330,9 +358,10 @@ export async function logoutAccount(accountId: string): Promise<void> {
     /* ignore */
   }
   if (s) {
-    s.sock = null;
     s.qr = null;
     s.qrDataUrl = null;
+    s.qrAt = null;
+    s.pairingCode = null;
   }
   setStatus(accountId, 'LOGGED_OUT');
 }
