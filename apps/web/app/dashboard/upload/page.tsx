@@ -7,6 +7,14 @@ import { Badge, Button, Empty } from '@/components/ui/ui';
 
 const ACCEPT = 'video/mp4,video/quicktime,video/webm,.mp4,.mov,.webm';
 
+function friendlyPublishError(e: unknown): string {
+  const msg = e instanceof Error ? e.message : 'Upload failed';
+  if (e instanceof TypeError || /failed to fetch|network ?error|load failed|timeout/i.test(msg)) {
+    return 'Cannot reach the server — the API may be restarting. Wait a few seconds and retry.';
+  }
+  return msg;
+}
+
 export default function UploadPage() {
   const qc = useQueryClient();
   const accounts = useQuery({ queryKey: ['accounts'], queryFn: api.accounts });
@@ -168,7 +176,7 @@ export default function UploadPage() {
 
         {publish.isError && (
           <p className="rounded-md border border-red-900/60 bg-red-950 px-3 py-2 text-sm text-red-200">
-            {(publish.error as Error).message}
+            {friendlyPublishError(publish.error)}
           </p>
         )}
 
