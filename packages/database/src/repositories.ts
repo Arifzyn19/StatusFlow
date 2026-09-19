@@ -177,6 +177,23 @@ export const uploadRepo = {
   remove(id: string): void {
     getDb().prepare('DELETE FROM uploads WHERE id=?').run(id);
   },
+  /**
+   * Crash/restart recovery: any upload left mid-pipeline by a previous run
+   * can never complete (its temp files and ffmpeg are gone) — mark it
+   * FAILED so the user gets a clear retry signal instead of a stuck row.
+   */
+  markInterrupted(): number {
+    const r = getDb()
+      .prepare(
+        `UPDATE uploads SET status='FAILED',
+         error_message='Server restarted during upload. Please retry.',
+         error_code='INTERRUPTED',
+         completed_at=datetime('now')
+         WHERE status IN ('QUEUED','VALIDATING','PROCESSING','PUBLISHING')`,
+      )
+      .run();
+    return Number((r as { changes: number }).changes ?? 0);
+  },
   stats(): { total: number; success: number; failed: number } {
     const rows = getDb()
       .prepare('SELECT status, COUNT(*) c FROM uploads GROUP BY status')

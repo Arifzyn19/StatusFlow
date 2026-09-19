@@ -206,9 +206,14 @@ export async function uploadRoutes(app: FastifyInstance) {
           // 4. Transcode only if needed
           const ffRelease = await ffmpegSem.acquire();
           try {
-            const { path: pub, transcoded } = await ensurePublishable(tmpPath, meta, (pct) => {
-              bus.emit('upload.progress', { uploadId, progress: 40 + Math.round(pct * 0.3), transcoded });
-            });
+            // NOTE: the progress callback must not close over `transcoded`
+            // below — it fires from a timer while the await is still pending
+            // (temporal dead zone → ReferenceError → process crash).
+            const onFfmpegProgress = (pct: number) => {
+              bus.emit('upload.progress', { uploadId, progress: 40 + Math.round(pct * 0.3) });
+            };
+            const { path: pub, transcoded } = await ensurePublishable(tmpPath, meta, onFfmpegProgress);
+            bus.emit('upload.progress', { uploadId, progress: 70, transcoded });
             publishPath = transcoded ? pub : '';
           } finally {
             ffRelease();

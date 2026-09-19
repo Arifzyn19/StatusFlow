@@ -15,6 +15,7 @@
 | 401 loops on web | Cookie `Secure` mismatch over HTTP | Set `COOKIE_SECURE=false` for plain HTTP, `true` behind HTTPS |
 | Backend restart mid-upload | PM2 restart / OOM | Upload stays non-terminal; temp files swept hourly; user retries — success is only reported on confirmed send |
 | `Bad MAC` / `No matching sessions` decrypt errors in logs | Stale incoming Signal sessions (common with LID messages) — Baileys retries automatically | Harmless noise; Status publishing is unaffected. Restart the API if it loops for hours |
+| Can't find the database file | Relative `DATABASE_URL` resolves against the process cwd: under PM2 (`cwd: apps/api`) it is `apps/api/data/statusflow.db`; `npm run db:migrate` from the root uses `./data/statusflow.db` | Prefer an absolute `DATABASE_URL=file:/abs/path/statusflow.db` in production |
 | Delete-account button errors | Fixed: client no longer sends empty JSON bodies; server caps socket teardown so removal can't hang | Update to latest build and restart both PM2 processes |
 | Disk full | Old temp files / DB growth | `du -sh data/*`; temp auto-sweeps files >6h; delete old history records |
 

@@ -1,5 +1,5 @@
 import { config } from '@statusflow/config';
-import { getDb, adminRepo } from '@statusflow/database';
+import { getDb, adminRepo, uploadRepo } from '@statusflow/database';
 import bcrypt from 'bcryptjs';
 import { buildApp } from './app.js';
 import { restoreSessions, closeAllSessions } from './modules/whatsapp/service.js';
@@ -35,6 +35,32 @@ async function main() {
   };
   process.on('SIGTERM', () => void close('SIGTERM'));
   process.on('SIGINT', () => void close('SIGINT'));
+
+  // A timer/queue callback must never take the whole server down silently:
+  // log loudly, attempt graceful shutdown, and let PM2 restart us.
+  // (Boot recovery below converts orphaned uploads into retriable FAILEDs.)
+  let shuttingDown = false;
+  const onFatal = (origin: string, err: unknown) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    try {
+      app.log.fatal({ err, origin }, 'fatal error — shutting down');
+    } catch {
+      /* logger may be broken; fall through to exit */
+    }
+    setTimeout(() => process.exit(1), 3000).unref?.();
+    close('FATAL').catch(() => process.exit(1));
+  };
+  process.on('uncaughtException', (err) => onFatal('uncaughtException', err));
+  process.on('unhandledRejection', (err) => onFatal('unhandledRejection', err));
+
+  // Crash recovery: uploads orphaned by a previous run can never finish.
+  try {
+    const n = uploadRepo.markInterrupted();
+    if (n > 0) app.log.info({ count: n }, 'marked interrupted uploads as FAILED');
+  } catch (e) {
+    app.log.error({ err: e }, 'interrupted-upload recovery failed');
+  }
 
   // Isolate session-restore failures: one bad account must not crash boot
   restoreSessions().catch((e) => app.log.error({ err: e }, 'session restore failed'));

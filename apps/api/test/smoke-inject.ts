@@ -16,6 +16,7 @@ process.env.JWT_SECRET = 'inject-test-secret-32chars-minimum!!';
 process.env.CORS_ORIGIN = 'http://localhost:3000';
 
 const { buildApp } = await import('../src/app.js');
+const { accountRepo, uploadRepo } = await import('@statusflow/database');
 const app = await buildApp();
 
 try {
@@ -102,6 +103,28 @@ try {
   });
   assert.equal(r.statusCode, 400, `empty body status (got ${r.statusCode}: ${r.body})`);
   assert.equal(r.json().code, 'BAD_REQUEST');
+
+  // 7. crash recovery: orphaned mid-pipeline rows become retriable FAILEDs
+  const tempAcc = accountRepo.create('smoke-recovery', 'smoke-session-ref');
+  const orphan = uploadRepo.create({
+    accountId: tempAcc.id,
+    filename: 'orphan.mp4',
+    mime: 'video/mp4',
+    size: 123,
+  });
+  uploadRepo.update(orphan.id, { status: 'PROCESSING' } as never);
+  const done = uploadRepo.create({
+    accountId: tempAcc.id,
+    filename: 'done.mp4',
+    mime: 'video/mp4',
+    size: 456,
+  });
+  uploadRepo.update(done.id, { status: 'SUCCESS' } as never);
+  assert.equal(uploadRepo.markInterrupted(), 1, 'exactly one orphan recovered');
+  const recovered = uploadRepo.get(orphan.id)!;
+  assert.equal(recovered.status, 'FAILED');
+  assert.equal(recovered.error_code, 'INTERRUPTED');
+  assert.equal(uploadRepo.get(done.id)!.status, 'SUCCESS', 'finished rows untouched');
 
   console.log('smoke-inject: ALL CHECKS PASSED');
 } finally {
