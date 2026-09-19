@@ -160,7 +160,7 @@ export const uploadRepo = {
     getDb()
       .prepare(
         `UPDATE uploads SET status=?, error_message=?, error_code=?, duration=?,
-         width=?, height=?, started_at=?, completed_at=? WHERE id=?`,
+         width=?, height=?, started_at=?, completed_at=?, audience=?, delivered=? WHERE id=?`,
       )
       .run(
         n.status,
@@ -171,6 +171,8 @@ export const uploadRepo = {
         n.height,
         n.started_at,
         n.completed_at,
+        n.audience,
+        n.delivered,
         id,
       );
   },

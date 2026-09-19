@@ -45,6 +45,10 @@ export interface UploadDTO {
   status: UploadStatus;
   errorMessage: string | null;
   errorCode: string | null;
+  /** Recipients the Status was addressed to (statusJidList size). */
+  audience: number | null;
+  /** True once a recipient device confirmed delivery. */
+  delivered: boolean | null;
   startedAt: string | null;
   completedAt: string | null;
   createdAt: string;

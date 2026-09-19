@@ -155,10 +155,55 @@ export function createTtlCache(ttlMs = 3600_000, max = 1000): CacheStore {
 const retryCounterCache = createTtlCache();
 
 /**
- * sendMessage resolving only means the stanza was accepted. Wait for the
- * server ack (messages.update, status >= SERVER_ACK) before reporting
- * SUCCESS — per spec, never claim an unconfirmed publish.
+ * Delivery confirmation for status posts. Baileys only emits receipts for
+ * status@broadcast as `message-receipt.update` (one per recipient device —
+ * see messages-recv handleReceipt); `messages.update` never fires for
+ * status, and the bare stanza ack emits nothing at all. Resolves true on
+ * the first matching receipt, false on timeout (offline recipients) —
+ * never throws, so callers stay honest without false failures.
  */
+export function waitForDelivery(sock: WASocket, messageId: string, timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const done = (v: boolean) => {
+      cleanup();
+      resolve(v);
+    };
+    const timer = setTimeout(() => done(false), timeoutMs);
+    timer.unref?.();
+    const matches = (key: { id?: string | null } | undefined) => key?.id === messageId;
+    const onUpdate = (events: { key?: { id?: string | null }; update?: { status?: number } }[]) => {
+      for (const { key, update } of events ?? []) {
+        if (matches(key) && (update?.status ?? 0) >= 2 /* SERVER_ACK */) {
+          done(true);
+          return;
+        }
+      }
+    };
+    const onReceipt = (events: { key?: { id?: string | null } }[]) => {
+      for (const { key } of events ?? []) {
+        if (matches(key)) {
+          done(true);
+          return;
+        }
+      }
+    };
+    const cleanup = () => {
+      clearTimeout(timer);
+      try {
+        sock.ev.off('messages.update', onUpdate as never);
+      } catch {
+        /* ignore */
+      }
+      try {
+        sock.ev.off('message-receipt.update', onReceipt as never);
+      } catch {
+        /* ignore */
+      }
+    };
+    sock.ev.on('messages.update', onUpdate as never);
+    sock.ev.on('message-receipt.update', onReceipt as never);
+  });
+}
 export function waitForServerAck(sock: WASocket, messageId: string, timeoutMs: number): Promise<void> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -672,14 +717,20 @@ export function getContactCount(accountId: string): number {
  * but nothing is ever posted (false SUCCESS). So we:
  *  1. resolve the audience from synced contacts (collected on login),
  *  2. refuse when Status privacy on the phone is set to Nobody,
- *  3. send with broadcast options,
- *  4. wait for the server ack before reporting SUCCESS.
+ *  3. send with broadcast options (sendMessage resolving + key.id is the
+ *     protocol-level confirmation that the addressed stanza was accepted),
+ *  4. best-effort delivery check: first device receipt within 20s.
+ *
+ * NOTE on receipts: Baileys never emits `messages.update` for status and
+ * nothing at all for the bare stanza ack — only per-recipient
+ * `message-receipt.update`. So `delivered=false` means "no recipient has
+ * confirmed yet (likely offline)", not failure.
  */
 export async function publishStatus(
   accountId: string,
   filePath: string,
   caption = '',
-): Promise<{ messageId: string; audience: number }> {
+): Promise<{ messageId: string; audience: number; delivered: boolean }> {
   const s = sessions.get(accountId);
   const sock = s?.sock;
   if (!sock || s.status !== 'CONNECTED' || !sock.user) {
@@ -733,14 +784,9 @@ export async function publishStatus(
   const id = res?.key?.id;
   if (!id) throw Object.assign(new Error('WhatsApp did not confirm publishing.'), { code: 'PUBLISH_UNCONFIRMED' });
   rememberOutboundMessage(id, res);
-  try {
-    await waitForServerAck(sock, id, 20_000);
-  } catch (e) {
-    log.warn({ err: e, accountId, messageId: id }, 'status post unacknowledged');
-    throw e;
-  }
-  log.info({ accountId, messageId: id, audience: audience.length }, 'status published and acknowledged');
-  return { messageId: id, audience: audience.length };
+  const delivered = await waitForDelivery(sock, id, 20_000);
+  log.info({ accountId, messageId: id, audience: audience.length, delivered }, 'status published');
+  return { messageId: id, audience: audience.length, delivered };
 }
 
 /** Restore all non-logged-out sessions after restart (isolated per account). */

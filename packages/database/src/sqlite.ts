@@ -89,8 +89,15 @@ function migrate(d: DatabaseSync): void {
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       PRIMARY KEY (account_id, jid)
     );
-    CREATE INDEX IF NOT EXISTS idx_contacts_account ON account_contacts(account_id);
-  `);
+    CREATE INDEX IF NOT EXISTS idx_contacts_account ON account_contacts(account_id);  `);
+  // Additive-only evolution for existing databases (ALTER has no IF NOT EXISTS).
+  const existing = new Set(
+    (d.prepare(`PRAGMA table_info(uploads)`).all() as unknown as { name: string }[]).map(
+      (c) => c.name,
+    ),
+  );
+  if (!existing.has('audience')) d.exec('ALTER TABLE uploads ADD COLUMN audience INTEGER');
+  if (!existing.has('delivered')) d.exec('ALTER TABLE uploads ADD COLUMN delivered INTEGER');
 }
 
 export function uuid(): string {
@@ -128,4 +135,6 @@ export interface UploadRow {
   started_at: string | null;
   completed_at: string | null;
   created_at: string;
+  audience: number | null;
+  delivered: number | null;
 }

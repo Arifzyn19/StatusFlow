@@ -227,16 +227,18 @@ export async function uploadRoutes(app: FastifyInstance) {
           uploadRepo.update(uploadId, { status: 'PUBLISHING' } as never);
           bus.emit('upload.status', { uploadId, status: 'PUBLISHING', progress: 80 });
           void extForMime;
-          const { messageId, audience } = await publishStatus(accountId, finalFile);
-          app.log.info({ uploadId, messageId, audience }, 'status published');
+          const { messageId, audience, delivered } = await publishStatus(accountId, finalFile);
+          app.log.info({ uploadId, messageId, audience, delivered }, 'status published');
 
           uploadRepo.update(uploadId, {
             status: 'SUCCESS',
             error_message: null,
             error_code: null,
+            audience,
+            delivered: delivered ? 1 : 0,
             completed_at: new Date().toISOString().slice(0, 19).replace('T', ' '),
           } as never);
-          bus.emit('upload.status', { uploadId, status: 'SUCCESS', progress: 100, audience, messageId });
+          bus.emit('upload.status', { uploadId, status: 'SUCCESS', progress: 100, audience, delivered, messageId });
         } catch (e) {
           if (e instanceof AppError && e.code === 'CANCELLED') {
             uploadRepo.update(uploadId, {
@@ -247,7 +249,13 @@ export async function uploadRoutes(app: FastifyInstance) {
             } as never);
             bus.emit('upload.status', { uploadId, status: 'CANCELLED', progress: 0 });
           } else {
-            const code = e instanceof AppError ? e.code : 'PUBLISH_FAILED';
+            const rawCode = (e as { code?: unknown })?.code;
+            const code =
+              e instanceof AppError
+                ? e.code
+                : typeof rawCode === 'string' && rawCode
+                  ? rawCode
+                  : 'PUBLISH_FAILED';
             const msg =
               e instanceof Error ? e.message : 'Publishing failed.';
             const friendly =

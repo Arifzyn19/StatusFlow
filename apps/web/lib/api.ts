@@ -101,6 +101,8 @@ export interface Upload {
   status: string;
   errorMessage: string | null;
   errorCode: string | null;
+  audience: number | null;
+  delivered: boolean | null;
   startedAt: string | null;
   completedAt: string | null;
   createdAt: string;

@@ -213,7 +213,11 @@ export default function UploadPage() {
               )}
             </div>
             {result.data.status === 'SUCCESS' && (
-              <p className="mt-2 text-sm text-emerald-300">Published — confirmed by WhatsApp.</p>
+              <p className="mt-2 text-sm text-emerald-300">
+                {result.data.delivered
+                  ? `Published — a recipient device confirmed delivery (${result.data.audience ?? '?'} contacts).`
+                  : `Sent to ${result.data.audience ?? '?'} contacts — no delivery receipt yet (recipients may be offline). Check the phone to confirm.`}
+              </p>
             )}
             {result.data.status === 'FAILED' && (
               <p className="mt-2 text-sm text-red-300">

@@ -24,6 +24,7 @@ import { disconnectReasonText, withTimeout, isFreshLinkFailure } from '../src/mo
 import {
   extractUserJids,
   waitForServerAck,
+  waitForDelivery,
   rememberOutboundMessage,
   lookupOutboundMessage,
   createTtlCache,
@@ -264,5 +265,24 @@ describe('upload state machine', () => {
     for (const t of ['SUCCESS', 'FAILED', 'CANCELLED']) {
       expect(order.includes(t) || ['FAILED', 'CANCELLED'].includes(t)).toBe(true);
     }
+  });
+});
+
+describe('waitForDelivery (status receipts)', () => {
+  it('resolves true on message-receipt.update for the id', async () => {
+    const sock = fakeSock();
+    const p = waitForDelivery(sock, 'R1', 1000);
+    (sock.ev as unknown as { fire: (e: string, v: never) => void }).fire('message-receipt.update', [
+      { key: { id: 'OTHER' }, receipt: {} },
+      { key: { id: 'R1' }, receipt: { userJid: 'x@s.whatsapp.net' } },
+    ] as never);
+    await expect(p).resolves.toBe(true);
+    expect(sock.handlerCount('message-receipt.update')).toBe(0);
+  });
+  it('resolves false (never throws) on timeout', async () => {
+    const sock = fakeSock();
+    await expect(waitForDelivery(sock, 'R9', 30)).resolves.toBe(false);
+    expect(sock.handlerCount('messages.update')).toBe(0);
+    expect(sock.handlerCount('message-receipt.update')).toBe(0);
   });
 });
