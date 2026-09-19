@@ -14,7 +14,7 @@ vi.mock('@statusflow/database', () => ({
 }));
 
 import { detectSignature, isPublishReady } from '../src/modules/video/service.js';
-import { disconnectReasonText } from '../src/modules/whatsapp/service.js';
+import { disconnectReasonText, withTimeout } from '../src/modules/whatsapp/service.js';
 import { Semaphore } from '../src/utils/semaphore.js';
 import { Errors, toApiError, AppError } from '../src/utils/errors.js';
 import { safeFilename } from '../src/utils/fs.js';
@@ -100,6 +100,15 @@ describe('disconnect reasons', () => {
   });
 });
 
+describe('withTimeout', () => {
+  it('resolves fast promises untouched', async () => {
+    await expect(withTimeout(Promise.resolve('ok'), 1000, new Error('late'))).resolves.toBe('ok');
+  });
+  it('rejects hanging promises after ms', async () => {
+    const never = new Promise<string>(() => {});
+    await expect(withTimeout(never, 20, new Error('too slow'))).rejects.toThrow('too slow');
+  });
+});
 describe('pairing phone validation (E.164 without +)', () => {
   const re = /^[1-9]\d{7,14}$/;
   it('accepts country code + number', () => {

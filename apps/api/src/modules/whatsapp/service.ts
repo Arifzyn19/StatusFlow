@@ -36,6 +36,9 @@ export type WaStatus =
 interface Session {
   id: string; // account id
   sock: WASocket | null;
+  /** Resolves once the handshake completes (first connection.update). */
+  ready: Promise<void> | null;
+  resolveReady: (() => void) | null;
   qr: string | null;
   qrDataUrl: string | null;
   qrAt: number | null;
@@ -46,6 +49,16 @@ interface Session {
   reconnectAttempts: number;
   reconnectTimer: NodeJS.Timeout | null;
   connecting: Promise<void> | null;
+}
+
+/** Await a promise, throwing `error` after `ms` instead of hanging forever. */
+export function withTimeout<T>(p: Promise<T>, ms: number, error: Error): Promise<T> {
+  let timer: NodeJS.Timeout;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(error), ms);
+    timer.unref?.();
+  });
+  return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
 }
 
 const sessions = new Map<string, Session>();
@@ -130,6 +143,8 @@ function getSession(accountId: string): Session {
     s = {
       id: accountId,
       sock: null,
+      ready: null,
+      resolveReady: null,
       qr: null,
       qrDataUrl: null,
       qrAt: null,
@@ -154,6 +169,11 @@ export function connectAccount(accountId: string): Promise<void> {
 
   setStatus(accountId, 'CONNECTING');
   s.connecting = (async () => {
+    // Readiness gate: pairing-code (and any stanza) requires an open channel.
+    // Resolved by the first connection.update from this socket.
+    s.ready = new Promise<void>((res) => {
+      s.resolveReady = res;
+    });
     ensureSecureDir(config.sessionDir);
     const dir = sessionDirFor(accountId);
     ensureSecureDir(dir);
@@ -174,6 +194,9 @@ export function connectAccount(accountId: string): Promise<void> {
 
     sock.ev.on('connection.update', async (u) => {
       const { connection, lastDisconnect, qr } = u;
+      // Handshake produced its first server message — the channel is live.
+      s.resolveReady?.();
+      s.resolveReady = null;
       if (qr) {
         s.qr = qr;
         s.qrDataUrl = await QRCode.toDataURL(qr).catch(() => null);
@@ -317,12 +340,6 @@ export async function requestPairingCode(accountId: string, phone: string): Prom
   }
   if (!s.sock) {
     await connectAccount(accountId);
-    // Wait for the socket to exist (handshake in progress is fine —
-    // requestPairingCode is designed to be called while connecting).
-    const deadline = Date.now() + 15_000;
-    while (!s.sock && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 250));
-    }
   }
   if (!s.sock) {
     throw Object.assign(new Error('Could not open a WhatsApp connection. Retry shortly.'), {
@@ -330,13 +347,24 @@ export async function requestPairingCode(accountId: string, phone: string): Prom
       statusCode: 502,
     });
   }
+  // The socket object exists immediately, but the encrypted channel takes a
+  // few seconds. Sending too early throws "Connection Closed" — wait for it.
+  if (s.ready) {
+    await withTimeout(
+      s.ready,
+      20_000,
+      Object.assign(new Error("WhatsApp didn't respond in time. Check the network and retry."), {
+        code: 'CONNECTION_TIMEOUT',
+        statusCode: 504,
+      }),
+    );
+  }
+  const sock = s.sock;
   try {
-    setTimeout(async () => { 
-    const code = await s.sock.requestPairingCode(phone);
+    const code = await sock.requestPairingCode(phone);
     s.pairingCode = code;
     bus.emit('account.pairing', { accountId, code });
     return code;
-    }, 3000)
   } catch (e) {
     log.warn({ err: e, accountId }, 'pairing code request failed');
     throw Object.assign(

@@ -93,7 +93,7 @@ function PairingBox({ accountId, status }: { accountId: string; status: string }
         </form>
       )}
       {pair.isError && <p className="mt-1 text-xs text-red-300">{(pair.error as Error).message}</p>}
-      <p className="mt-1 text-[11px] text-fog">Use the number of the phone holding the WhatsApp account. A wrong number breaks this session — then remove and re-add the account.</p>
+      <p className="mt-1 text-[11px] text-fog">Use the number of the phone holding the WhatsApp account. Tip: request the code after a QR appears above — that confirms WhatsApp is reachable. A wrong number breaks this session — then remove and re-add the account.</p>
     </div>
   );
 }
