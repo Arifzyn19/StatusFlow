@@ -28,6 +28,8 @@ export interface WhatsAppAccountDTO {
   lastConnectedAt: string | null;
   createdAt: string;
   updatedAt: string;
+  /** Synced address-book size — the Status audience (statusJidList). */
+  contactCount: number;
 }
 
 export interface UploadDTO {

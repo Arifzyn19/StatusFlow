@@ -227,7 +227,8 @@ export async function uploadRoutes(app: FastifyInstance) {
           uploadRepo.update(uploadId, { status: 'PUBLISHING' } as never);
           bus.emit('upload.status', { uploadId, status: 'PUBLISHING', progress: 80 });
           void extForMime;
-          await publishStatus(accountId, finalFile);
+          const { messageId, audience } = await publishStatus(accountId, finalFile);
+          app.log.info({ uploadId, messageId, audience }, 'status published');
 
           uploadRepo.update(uploadId, {
             status: 'SUCCESS',
@@ -235,7 +236,7 @@ export async function uploadRoutes(app: FastifyInstance) {
             error_code: null,
             completed_at: new Date().toISOString().slice(0, 19).replace('T', ' '),
           } as never);
-          bus.emit('upload.status', { uploadId, status: 'SUCCESS', progress: 100 });
+          bus.emit('upload.status', { uploadId, status: 'SUCCESS', progress: 100, audience, messageId });
         } catch (e) {
           if (e instanceof AppError && e.code === 'CANCELLED') {
             uploadRepo.update(uploadId, {

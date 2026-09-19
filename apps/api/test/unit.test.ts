@@ -11,10 +11,24 @@ vi.mock('@statusflow/database', () => ({
     remove: () => {},
     countByStatus: () => ({}),
   },
+  contactRepo: {
+    upsert: () => {},
+    list: () => [],
+    count: () => 0,
+    clear: () => {},
+  },
 }));
 
 import { detectSignature, isPublishReady } from '../src/modules/video/service.js';
 import { disconnectReasonText, withTimeout, isFreshLinkFailure } from '../src/modules/whatsapp/service.js';
+import {
+  extractUserJids,
+  waitForServerAck,
+  rememberOutboundMessage,
+  lookupOutboundMessage,
+  createTtlCache,
+} from '../src/modules/whatsapp/service.js';
+import type { WASocket } from '@whiskeysockets/baileys';
 import { Semaphore } from '../src/utils/semaphore.js';
 import { Errors, toApiError, AppError } from '../src/utils/errors.js';
 import { safeFilename } from '../src/utils/fs.js';
@@ -148,6 +162,100 @@ describe('pairing phone validation (E.164 without +)', () => {
     expect(re.test('2010 123456')).toBe(false);
     expect(re.test('12345')).toBe(false);
     expect(re.test('0201012345678')).toBe(false);
+  });
+});
+describe('status audience (extractUserJids)', () => {
+  it('keeps PN and LID users, drops groups/broadcast/status', () => {
+    expect(
+      extractUserJids([
+        '6281234567890@s.whatsapp.net',
+        '1234567890@lid',
+        '123456-789@g.us',
+        'status@broadcast',
+        '1234@broadcast',
+        null,
+        undefined,
+        'not-a-jid',
+      ]),
+    ).toEqual(['6281234567890@s.whatsapp.net', '1234567890@lid']);
+  });
+  it('excludes self and dedupes by user part', () => {
+    expect(
+      extractUserJids(
+        ['6281@s.whatsapp.net', '6281:5@s.whatsapp.net', '6282@s.whatsapp.net'],
+        '6281',
+      ),
+    ).toEqual(['6282@s.whatsapp.net']);
+  });
+});
+
+function fakeSock() {
+  const handlers = new Map<string, Set<(v: never) => void>>();
+  const ev = {
+    on: (e: string, h: (v: never) => void) => {
+      let s = handlers.get(e);
+      if (!s) {
+        s = new Set();
+        handlers.set(e, s);
+      }
+      s.add(h);
+    },
+    off: (e: string, h: (v: never) => void) => {
+      handlers.get(e)?.delete(h);
+    },
+    fire: (e: string, v: never) => {
+      handlers.get(e)?.forEach((h) => h(v));
+    },
+  };
+  return { ev, handlerCount: (e: string) => handlers.get(e)?.size ?? 0 } as unknown as {
+    ev: WASocket['ev'];
+    handlerCount: (e: string) => number;
+    fire: (e: string, v: never) => void;
+  } & { fire: (e: string, v: never) => void };
+}
+
+describe('waitForServerAck', () => {
+  it('resolves on SERVER_ACK for the message id', async () => {
+    const sock = fakeSock();
+    const p = waitForServerAck(sock, 'MSG1', 1000);
+    (sock.ev as unknown as { fire: (e: string, v: never) => void }).fire('messages.update', [
+      { key: { id: 'OTHER' }, update: { status: 4 } },
+      { key: { id: 'MSG1' }, update: { status: 1 } },
+      { key: { id: 'MSG1' }, update: { status: 2 } },
+    ] as never);
+    await expect(p).resolves.toBeUndefined();
+    expect(sock.handlerCount('messages.update')).toBe(0);
+  });
+  it('rejects PUBLISH_UNCONFIRMED on timeout', async () => {
+    const sock = fakeSock();
+    await expect(waitForServerAck(sock, 'MSG9', 30)).rejects.toMatchObject({
+      code: 'PUBLISH_UNCONFIRMED',
+    });
+    expect(sock.handlerCount('messages.update')).toBe(0);
+  });
+});
+
+describe('outbound message store (getMessage backing)', () => {
+  it('remembers and looks up by id', () => {
+    rememberOutboundMessage('K1', { hello: 1 });
+    expect(lookupOutboundMessage('K1')).toEqual({ hello: 1 });
+    expect(lookupOutboundMessage('missing')).toBeUndefined();
+  });
+});
+
+describe('createTtlCache', () => {
+  it('get/set/del/flushAll with expiry', async () => {
+    const c = createTtlCache(30, 10);
+    c.set('a', 1);
+    expect(c.get<number>('a')).toBe(1);
+    c.del('a');
+    expect(c.get('a')).toBeUndefined();
+    c.set('b', 2);
+    c.flushAll();
+    expect(c.get('b')).toBeUndefined();
+    c.set('c', 3);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(c.get('c')).toBeUndefined();
   });
 });
 describe('upload state machine', () => {

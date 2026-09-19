@@ -48,6 +48,8 @@ export const api = {
       body: JSON.stringify({ phone }),
     }),
   reconnect: (id: string) => req<{ ok: boolean }>(`/api/accounts/${id}/reconnect`, { method: 'POST' }),
+  syncContacts: (id: string) =>
+    req<{ ok: boolean; started: boolean }>(`/api/accounts/${id}/sync-contacts`, { method: 'POST' }),
   logoutAccount: (id: string) => req<{ ok: boolean }>(`/api/accounts/${id}/logout`, { method: 'POST' }),
   removeAccount: (id: string) => req<{ ok: boolean }>(`/api/accounts/${id}`, { method: 'DELETE' }),
 
@@ -74,6 +76,7 @@ export interface Account {
   lastConnectedAt: string | null;
   createdAt: string;
   updatedAt: string;
+  contactCount: number;
 }
 
 export interface QrState {

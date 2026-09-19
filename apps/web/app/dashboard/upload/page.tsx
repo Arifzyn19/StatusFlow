@@ -82,7 +82,7 @@ export default function UploadPage() {
             <option value="">Select account…</option>
             {connected.map((a) => (
               <option key={a.id} value={a.id}>
-                {a.name} {a.phoneNumber ? `· ${a.phoneNumber}` : ''}
+                {a.name} {a.phoneNumber ? `· ${a.phoneNumber}` : ''} · {a.contactCount} contacts
               </option>
             ))}
           </select>

@@ -10,6 +10,8 @@ import {
   getStatus,
   requestPairingCode,
   resetReconnect,
+  syncContacts,
+  getContactCount,
 } from '../whatsapp/service.js';
 import { bus } from '../../utils/events.js';
 import { parseOr400 } from '../../utils/validate.js';
@@ -41,6 +43,7 @@ function dto(a: ReturnType<typeof accountRepo.get> & object) {
     lastConnectedAt: toIso(r.last_connected_at),
     createdAt: toIso(r.created_at) ?? r.created_at,
     updatedAt: toIso(r.updated_at) ?? r.updated_at,
+    contactCount: getContactCount(r.id),
   };
 }
 
@@ -112,6 +115,31 @@ export async function accountRoutes(app: FastifyInstance) {
     resetReconnect(id);
     connectAccount(id).catch((e) => app.log.error({ err: e }, 'reconnect failed'));
     return { ok: true, status: getStatus(id) };
+  });
+
+  // Pull the address-book snapshot used as the Status audience.
+  // Runs in the background (202) — watch account.contacts events / count.
+  app.post('/api/accounts/:id/sync-contacts', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    if (!accountRepo.get(id))
+      return reply.code(404).send({ error: 'Account not found', code: 'NOT_FOUND' });
+    if (getStatus(id) !== 'CONNECTED') {
+      return reply
+        .code(409)
+        .send({ error: 'Account is not connected.', code: 'ACCOUNT_NOT_CONNECTED' });
+    }
+    syncContacts(id)
+      .then(({ after }) => bus.emit('account.contacts', { accountId: id, contacts: after }))
+      .catch((e) => {
+        const err = e as { code?: string; message?: string };
+        bus.emit('account.contacts', {
+          accountId: id,
+          error: err.message ?? 'Sync failed',
+          code: err.code ?? 'SYNC_FAILED',
+        });
+        app.log.warn({ err: e, accountId: id }, 'manual contact sync failed');
+      });
+    return reply.code(202).send({ ok: true, started: true });
   });
 
   app.post('/api/accounts/:id/logout', async (req, reply) => {

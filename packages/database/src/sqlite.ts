@@ -83,6 +83,13 @@ function migrate(d: DatabaseSync): void {
       value TEXT NOT NULL,
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
+    CREATE TABLE IF NOT EXISTS account_contacts (
+      account_id TEXT NOT NULL REFERENCES whatsapp_accounts(id) ON DELETE CASCADE,
+      jid TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (account_id, jid)
+    );
+    CREATE INDEX IF NOT EXISTS idx_contacts_account ON account_contacts(account_id);
   `);
 }
 

@@ -18,10 +18,13 @@ import makeWASocket, {
   fetchLatestBaileysVersion,
   useMultiFileAuthState,
   Browsers,
+  jidDecode,
+  ALL_WA_PATCH_NAMES,
   type WASocket,
+  type CacheStore,
 } from '@whiskeysockets/baileys';
 import { config } from '@statusflow/config';
-import { accountRepo } from '@statusflow/database';
+import { accountRepo, contactRepo } from '@statusflow/database';
 import { bus } from '../../utils/events.js';
 import { ensureSecureDir } from '../../utils/fs.js';
 
@@ -63,6 +66,133 @@ export function withTimeout<T>(p: Promise<T>, ms: number, error: Error): Promise
 
 const sessions = new Map<string, Session>();
 const log = pino({ level: process.env.LOG_LEVEL ?? 'info' });
+
+/**
+ * Keep only real user JIDs (PN or LID), drop groups/broadcasts/status,
+ * exclude self, dedupe by user part. Pure — unit-tested.
+ */
+export function extractUserJids(
+  ids: (string | null | undefined)[],
+  selfUser?: string,
+): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const id of ids) {
+    if (!id) continue;
+    try {
+      const decoded = jidDecode(id);
+      const user = decoded?.user;
+      const server = decoded?.server;
+      if (!user || (server !== 's.whatsapp.net' && server !== 'lid')) continue;
+      if (selfUser && user === selfUser) continue;
+      if (seen.has(user)) continue;
+      seen.add(user);
+      out.push(id);
+    } catch {
+      /* malformed JID — skip */
+    }
+  }
+  return out;
+}
+
+/** Recently sent messages, so Baileys can answer retry requests for them
+ * (docs: troubleshooting "Messages failing to send"). Statuses live 24h. */
+const outboundMessages = new Map<string, { message: unknown; at: number }>();
+const OUTBOUND_TTL_MS = 24 * 3600 * 1000;
+const OUTBOUND_MAX = 100;
+
+export function rememberOutboundMessage(id: string, message: unknown): void {
+  outboundMessages.set(id, { message, at: Date.now() });
+  if (outboundMessages.size > OUTBOUND_MAX * 2) {
+    const cutoff = Date.now() - OUTBOUND_TTL_MS;
+    for (const [k, v] of outboundMessages) {
+      if (v.at < cutoff) outboundMessages.delete(k);
+      if (outboundMessages.size <= OUTBOUND_MAX) break;
+    }
+  }
+}
+
+export function lookupOutboundMessage(id: string): unknown {
+  return outboundMessages.get(id)?.message;
+}
+
+/** Tiny TTL cache implementing Baileys' CacheStore (no extra dependency). */
+export function createTtlCache(ttlMs = 3600_000, max = 1000): CacheStore {
+  const m = new Map<string, { v: unknown; exp: number }>();
+  const prune = () => {
+    const now = Date.now();
+    for (const [k, v] of m) {
+      if (v.exp <= now) m.delete(k);
+    }
+    while (m.size > max) {
+      const oldest = m.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      m.delete(oldest);
+    }
+  };
+  return {
+    get<T>(key: string): T | undefined {
+      const h = m.get(key);
+      if (!h || h.exp <= Date.now()) {
+        m.delete(key);
+        return undefined;
+      }
+      return h.v as T;
+    },
+    set<T>(key: string, value: T): void {
+      m.set(key, { v: value, exp: Date.now() + ttlMs });
+      if (m.size > max) prune();
+    },
+    del(key: string): void {
+      m.delete(key);
+    },
+    flushAll(): void {
+      m.clear();
+    },
+  };
+}
+
+const retryCounterCache = createTtlCache();
+
+/**
+ * sendMessage resolving only means the stanza was accepted. Wait for the
+ * server ack (messages.update, status >= SERVER_ACK) before reporting
+ * SUCCESS — per spec, never claim an unconfirmed publish.
+ */
+export function waitForServerAck(sock: WASocket, messageId: string, timeoutMs: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(
+        Object.assign(
+          new Error(
+            'WhatsApp did not acknowledge the Status post in time. It may still appear — check the phone before retrying.',
+          ),
+          { code: 'PUBLISH_UNCONFIRMED', statusCode: 504 },
+        ),
+      );
+    }, timeoutMs);
+    timer.unref?.();
+    const onUpdate = (events: { key?: { id?: string | null }; update?: { status?: number } }[]) => {
+      for (const { key, update } of events ?? []) {
+        if (key?.id === messageId && (update?.status ?? 0) >= 2 /* SERVER_ACK */) {
+          cleanup();
+          resolve();
+          return;
+        }
+      }
+    };
+    const cleanup = () => {
+      clearTimeout(timer);
+      try {
+        sock.ev.off('messages.update', onUpdate as never);
+      } catch {
+        /* ignore */
+      }
+    };
+    sock.ev.on('messages.update', onUpdate as never);
+  });
+}
 
 /** Human-readable reason for a Baileys disconnect code (shown in UI + logs). */
 export function disconnectReasonText(code: number | undefined): string {
@@ -196,6 +326,9 @@ export function connectAccount(accountId: string): Promise<void> {
     const dir = sessionDirFor(accountId);
     ensureSecureDir(dir);
     const { state, saveCreds } = await useMultiFileAuthState(dir);
+    // Brand-new sessions never ran app-state sync (syncFullHistory is off),
+    // so pull the address book once it logs in — Status needs the audience.
+    const isFreshSession = !state.creds.registered;
     const { version } = await fetchLatestBaileysVersion().catch(() => ({ version: [2, 3000, 0] as [number, number, number] }));
 
     const sock = makeWASocket({
@@ -205,10 +338,39 @@ export function connectAccount(accountId: string): Promise<void> {
       browser: Browsers.ubuntu("Chrome"),
       syncFullHistory: false,
       markOnlineOnConnect: false,
+      // Docs (troubleshooting): lets Baileys answer retry requests for
+      // messages we sent — including our Status posts.
+      getMessage: async (key) => {
+        if (!key?.id) return undefined;
+        return lookupOutboundMessage(key.id) as never;
+      },
+      msgRetryCounterCache: retryCounterCache,
     });
     s.sock = sock;
 
     sock.ev.on('creds.update', saveCreds);
+
+    // Collect the contact audience required for Status delivery
+    // (docs: statusJidList). Never allowed to break the socket.
+    const collectIds = (ids: (string | null | undefined)[]) => {
+      try {
+        let self: string | undefined;
+        try {
+          self = sock.user?.id ? jidDecode(sock.user.id)?.user : undefined;
+        } catch {
+          self = undefined;
+        }
+        const fresh = extractUserJids(ids, self);
+        if (fresh.length) contactRepo.upsert(accountId, fresh);
+      } catch {
+        /* ignore collector errors */
+      }
+    };
+    sock.ev.on('contacts.upsert', (contacts) => collectIds(contacts.map((c) => c.id)));
+    sock.ev.on('chats.upsert', (chats) => collectIds(chats.map((c) => c.id)));
+    sock.ev.on('messages.upsert', ({ messages }) =>
+      collectIds(messages.map((m) => m.key?.remoteJid)),
+    );
 
     sock.ev.on('connection.update', async (u) => {
       const { connection, lastDisconnect, qr } = u;
@@ -226,6 +388,15 @@ export function connectAccount(accountId: string): Promise<void> {
         s.reconnectAttempts = 0;
         const phone = sock.user?.id?.split(':')[0] ?? sock.user?.id?.split('@')[0] ?? null;
         setStatus(accountId, 'CONNECTED', { phone });
+        if (isFreshSession) {
+          // Fire-and-forget: populate the Status audience in the background.
+          syncContacts(accountId)
+            .then(({ after }) => {
+              bus.emit('account.contacts', { accountId, contacts: after });
+              log.info({ accountId, contacts: after }, 'initial contact sync complete');
+            })
+            .catch((e) => log.warn({ err: e, accountId }, 'initial contact sync failed'));
+        }
       }
       if (connection === 'close') {
         const code = (lastDisconnect?.error as Boom | undefined)?.output?.statusCode;
@@ -445,27 +616,131 @@ export function getPairingCode(accountId: string): string | null {
 }
 
 /**
+ * Pull the address-book snapshot that Status delivery needs (statusJidList).
+ * With syncFullHistory disabled the automatic app-state sync never runs, so
+ * this must be triggered explicitly: automatically on first-ever link, or via
+ * POST /api/accounts/:id/sync-contacts for existing sessions. Collections
+ * with no locally stored version are returned as full snapshots.
+ */
+export async function syncContacts(accountId: string): Promise<{ before: number; after: number }> {
+  const s = sessions.get(accountId);
+  const sock = s?.sock;
+  if (!sock || s.status !== 'CONNECTED') {
+    throw Object.assign(new Error('Account is not connected.'), {
+      code: 'ACCOUNT_NOT_CONNECTED',
+      statusCode: 409,
+    });
+  }
+  const resync = (
+    sock as unknown as {
+      resyncAppState?: (collections: string[], isInitialSync: boolean) => Promise<void>;
+    }
+  ).resyncAppState;
+  if (typeof resync !== 'function') {
+    throw Object.assign(new Error('Contact sync is not supported by this Baileys version.'), {
+      code: 'SYNC_UNSUPPORTED',
+      statusCode: 501,
+    });
+  }
+  const before = contactRepo.count(accountId);
+  await withTimeout(
+    resync.call(sock, [...ALL_WA_PATCH_NAMES], true),
+    120_000,
+    Object.assign(new Error('Contact sync timed out — partial results kept, retry to continue.'), {
+      code: 'SYNC_TIMEOUT',
+      statusCode: 504,
+    }),
+  );
+  const after = contactRepo.count(accountId);
+  log.info({ accountId, before, after }, 'contact sync complete');
+  return { before, after };
+}
+
+export function getContactCount(accountId: string): number {
+  try {
+    return contactRepo.count(accountId);
+  } catch {
+    return 0;
+  }
+}
+
+/**
  * Publish a video file to the account's WhatsApp Status.
- * Uses status@broadcast. Returns message id on confirmed send.
+ *
+ * Per Baileys docs (Broadcasts & Stories), posting to status@broadcast
+ * REQUIRES statusJidList — without an audience the server acks the stanza
+ * but nothing is ever posted (false SUCCESS). So we:
+ *  1. resolve the audience from synced contacts (collected on login),
+ *  2. refuse when Status privacy on the phone is set to Nobody,
+ *  3. send with broadcast options,
+ *  4. wait for the server ack before reporting SUCCESS.
  */
 export async function publishStatus(
   accountId: string,
   filePath: string,
   caption = '',
-): Promise<{ messageId: string }> {
+): Promise<{ messageId: string; audience: number }> {
   const s = sessions.get(accountId);
-  if (!s?.sock || s.status !== 'CONNECTED' || !s.sock.user) {
+  const sock = s?.sock;
+  if (!sock || s.status !== 'CONNECTED' || !sock.user) {
     throw Object.assign(new Error('Account is not connected.'), { code: 'ACCOUNT_NOT_CONNECTED' });
   }
+
+  let selfUser: string | undefined;
+  try {
+    selfUser = jidDecode(sock.user.id)?.user;
+  } catch {
+    selfUser = undefined;
+  }
+  const audience = extractUserJids(contactRepo.list(accountId), selfUser);
+  if (!audience.length) {
+    throw Object.assign(
+      new Error(
+        'No contacts synced yet — WhatsApp needs an audience list to post Status. ' +
+          'Reconnect, wait about a minute for contact sync, then retry.',
+      ),
+      { code: 'NO_AUDIENCE', statusCode: 409 },
+    );
+  }
+
+  if (typeof sock.fetchPrivacySettings === 'function') {
+    try {
+      const privacy = await sock.fetchPrivacySettings();
+      if (privacy && typeof privacy.status === 'string' && privacy.status.toLowerCase() === 'none') {
+        throw Object.assign(
+          new Error(
+            'Status privacy on the phone is set to Nobody — allow at least My contacts, then retry.',
+          ),
+          { code: 'STATUS_PRIVACY_NONE', statusCode: 403 },
+        );
+      }
+    } catch (e) {
+      if ((e as { code?: string })?.code === 'STATUS_PRIVACY_NONE') throw e;
+      log.debug({ err: e, accountId }, 'status privacy check skipped');
+    }
+  }
+
   const data = await fs.promises.readFile(filePath);
-  const res = await s.sock.sendMessage('status@broadcast', {
-    video: data,
-    caption: caption || undefined,
-    mimetype: 'video/mp4',
-  } as never);
-  const id = (res as { key?: { id?: string } })?.key?.id;
+  const res = await sock.sendMessage(
+    'status@broadcast',
+    {
+      video: data,
+      caption: caption || undefined,
+      mimetype: 'video/mp4',
+    },
+    { broadcast: true, statusJidList: audience },
+  );
+  const id = res?.key?.id;
   if (!id) throw Object.assign(new Error('WhatsApp did not confirm publishing.'), { code: 'PUBLISH_UNCONFIRMED' });
-  return { messageId: id };
+  rememberOutboundMessage(id, res);
+  try {
+    await waitForServerAck(sock, id, 20_000);
+  } catch (e) {
+    log.warn({ err: e, accountId, messageId: id }, 'status post unacknowledged');
+    throw e;
+  }
+  log.info({ accountId, messageId: id, audience: audience.length }, 'status published and acknowledged');
+  return { messageId: id, audience: audience.length };
 }
 
 /** Restore all non-logged-out sessions after restart (isolated per account). */

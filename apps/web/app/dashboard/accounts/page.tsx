@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { QrCode, RefreshCw, LogOut, Trash2, Plus, Smartphone } from 'lucide-react';
+import { QrCode, RefreshCw, LogOut, Trash2, Plus, Smartphone, Users } from 'lucide-react';
 import { api } from '@/lib/api';
 import { Badge, Button, Empty, Skeleton, FieldError } from '@/components/ui/ui';
 
@@ -116,6 +116,10 @@ export default function AccountsPage() {
     mutationFn: api.reconnect,
     onSuccess: () => qc.invalidateQueries({ queryKey: ['accounts'] }),
   });
+  const sync = useMutation({
+    mutationFn: api.syncContacts,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['accounts'] }),
+  });
   const logoutAcc = useMutation({
     mutationFn: api.logoutAccount,
     onSuccess: () => qc.invalidateQueries({ queryKey: ['accounts'] }),
@@ -172,6 +176,14 @@ export default function AccountsPage() {
                     {a.phoneNumber ?? 'Phone not linked yet'}
                     {a.lastConnectedAt ? ` · last seen ${new Date(a.lastConnectedAt).toLocaleString()}` : ''}
                   </p>
+                  <p className="mt-0.5 flex items-center gap-1 text-xs text-fog">
+                    <Users className="h-3 w-3" />
+                    {a.contactCount > 0 ? (
+                      <span>{a.contactCount} contact{a.contactCount === 1 ? '' : 's'} synced — Status audience ready</span>
+                    ) : (
+                      <span className="text-amber-300">No contacts synced — Status won’t post until you sync</span>
+                    )}
+                  </p>
                 </div>
               </div>
               <Badge status={a.status} />
@@ -191,6 +203,14 @@ export default function AccountsPage() {
               <Button variant="ghost" onClick={() => reconnect.mutate(a.id)} disabled={reconnect.isPending}>
                 <RefreshCw className="h-4 w-4" /> Reconnect
               </Button>
+              <Button
+                variant="ghost"
+                onClick={() => sync.mutate(a.id)}
+                disabled={sync.isPending || a.status !== 'CONNECTED'}
+                title="Pull the address-book snapshot WhatsApp needs to deliver Status updates"
+              >
+                <Users className="h-4 w-4" /> {sync.isPending ? 'Syncing…' : 'Sync contacts'}
+              </Button>
               <Button variant="ghost" onClick={() => logoutAcc.mutate(a.id)}>
                 <LogOut className="h-4 w-4" /> Logout
               </Button>
@@ -203,6 +223,9 @@ export default function AccountsPage() {
                 <Trash2 className="h-4 w-4" /> Remove
               </Button>
             </div>
+            {sync.isError && (
+              <p className="text-xs text-red-300">{(sync.error as Error).message}</p>
+            )}
           </article>
         ))}
       </div>

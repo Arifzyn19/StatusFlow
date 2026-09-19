@@ -16,7 +16,7 @@ process.env.JWT_SECRET = 'inject-test-secret-32chars-minimum!!';
 process.env.CORS_ORIGIN = 'http://localhost:3000';
 
 const { buildApp } = await import('../src/app.js');
-const { accountRepo, uploadRepo } = await import('@statusflow/database');
+const { accountRepo, uploadRepo, contactRepo } = await import('@statusflow/database');
 const app = await buildApp();
 
 try {
@@ -125,6 +125,14 @@ try {
   assert.equal(recovered.status, 'FAILED');
   assert.equal(recovered.error_code, 'INTERRUPTED');
   assert.equal(uploadRepo.get(done.id)!.status, 'SUCCESS', 'finished rows untouched');
+
+  // 8. contact audience store round-trip
+  contactRepo.upsert(tempAcc.id, ['6281@s.whatsapp.net', '123@lid', '6281@s.whatsapp.net']);
+  contactRepo.upsert(tempAcc.id, []);
+  assert.deepEqual(contactRepo.list(tempAcc.id).sort(), ['123@lid', '6281@s.whatsapp.net']);
+  assert.equal(contactRepo.count(tempAcc.id), 2);
+  contactRepo.clear(tempAcc.id);
+  assert.equal(contactRepo.count(tempAcc.id), 0);
 
   console.log('smoke-inject: ALL CHECKS PASSED');
 } finally {

@@ -210,8 +210,40 @@ export const uploadRepo = {
   },
 };
 
-export const settingsRepo = {
-  get(key: string, fallback = ''): string {
+/** Synced contact JIDs per account — the Status audience (statusJidList). */
+export const contactRepo = {
+  upsert(accountId: string, jids: string[]): void {
+    if (!jids.length) return;
+    const stmt = getDb().prepare(
+      `INSERT OR IGNORE INTO account_contacts (account_id, jid) VALUES (?,?)`,
+    );
+    for (const j of jids.slice(0, 3000)) {
+      try {
+        stmt.run(accountId, j);
+      } catch {
+        /* ignore single bad rows */
+      }
+    }
+  },
+  list(accountId: string): string[] {
+    return (
+      getDb()
+        .prepare('SELECT jid FROM account_contacts WHERE account_id=?')
+        .all(accountId) as unknown as { jid: string }[]
+    ).map((r) => r.jid);
+  },
+  count(accountId: string): number {
+    const r = getDb()
+      .prepare('SELECT COUNT(*) c FROM account_contacts WHERE account_id=?')
+      .get(accountId) as unknown as { c: number };
+    return r.c;
+  },
+  clear(accountId: string): void {
+    getDb().prepare('DELETE FROM account_contacts WHERE account_id=?').run(accountId);
+  },
+};
+
+export const settingsRepo = {  get(key: string, fallback = ''): string {
     const r = getDb().prepare('SELECT value FROM system_settings WHERE key=?').get(key) as
       | { value: string }
       | undefined;
